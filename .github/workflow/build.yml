@@ -1,0 +1,896 @@
+name: Build AR Messer APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Android SDK Pakete
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" > /dev/null || true
+
+      - name: Projekt (Code, Icon, Design) erzeugen
+        run: |
+          set -e
+          mkdir -p app/src/main/java/com/armesser/app app/src/main/res/values app/src/main/res/drawable app/src/main/res/mipmap-anydpi-v26
+
+          cat > settings.gradle.kts <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "ARMesser"
+          include(":app")
+          EOF
+
+          cat > build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          EOF
+
+          cat > app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.armesser.app"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.armesser.app"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          dependencies {
+              implementation("com.google.ar:core:1.42.0")
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.activity:activity-ktx:1.9.0")
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.CAMERA" />
+              <uses-feature android:name="android.hardware.camera.ar" android:required="true" />
+              <uses-feature android:glEsVersion="0x00030000" android:required="true" />
+              <application
+                  android:allowBackup="false"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher"
+                  android:label="AR Messer"
+                  android:theme="@style/AppTheme">
+                  <meta-data android:name="com.google.ar.core" android:value="required" />
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="portrait"
+                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/res/values/styles.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar">
+                  <item name="android:windowBackground">@android:color/black</item>
+                  <item name="android:statusBarColor">@android:color/transparent</item>
+                  <item name="android:navigationBarColor">@android:color/transparent</item>
+              </style>
+              <color name="icon_bg">#0A0F1E</color>
+          </resources>
+          EOF
+
+          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/icon_bg" />
+              <foreground android:drawable="@drawable/ic_fg" />
+          </adaptive-icon>
+          EOF
+
+          cat > app/src/main/res/drawable/ic_fg.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp" android:height="108dp"
+              android:viewportWidth="108" android:viewportHeight="108">
+              <path android:pathData="M32,54 a22,22 0 1,0 44,0 a22,22 0 1,0 -44,0"
+                  android:strokeColor="#00E5FF" android:strokeWidth="3.5" android:fillColor="#00000000" />
+              <path android:pathData="M30,54 L78,54"
+                  android:strokeColor="#FF2D95" android:strokeWidth="3" android:strokeLineCap="round" />
+              <path android:pathData="M30,46 L30,62 M78,46 L78,62 M42,50 L42,58 M54,48 L54,60 M66,50 L66,58"
+                  android:strokeColor="#FFFFFF" android:strokeWidth="2.5" android:strokeLineCap="round" />
+              <path android:pathData="M52,54 a2,2 0 1,0 4,0 a2,2 0 1,0 -4,0"
+                  android:fillColor="#00E5FF" />
+          </vector>
+          EOF
+
+          # ---------------------------------------------------------------- Renderer
+          cat > app/src/main/java/com/armesser/app/Renderer.kt <<'EOF'
+          package com.armesser.app
+
+          import android.graphics.Bitmap
+          import android.opengl.GLES11Ext
+          import android.opengl.GLES20
+          import android.opengl.GLSurfaceView
+          import android.opengl.Matrix
+          import com.google.ar.core.*
+          import java.nio.ByteBuffer
+          import java.nio.ByteOrder
+          import java.nio.FloatBuffer
+          import java.util.Locale
+          import java.util.concurrent.ConcurrentLinkedQueue
+          import javax.microedition.khronos.egl.EGLConfig
+          import javax.microedition.khronos.opengles.GL10
+          import kotlin.math.sqrt
+
+          enum class Mode(val label: String) { LINE("Strecke"), PATH("Pfad"), AREA("Fläche") }
+          enum class LengthUnit(val label: String) { CM("cm"), M("m"), IN("in"), FT("ft") }
+
+          object Cfg {
+              @Volatile var unit = LengthUnit.CM
+              @Volatile var factor = 1.0
+          }
+
+          object Geo {
+              fun dist(a: FloatArray, b: FloatArray): Double {
+                  val dx = (a[0] - b[0]).toDouble(); val dy = (a[1] - b[1]).toDouble(); val dz = (a[2] - b[2]).toDouble()
+                  return sqrt(dx * dx + dy * dy + dz * dz)
+              }
+              fun pathLen(p: List<FloatArray>): Double {
+                  var s = 0.0
+                  for (i in 0 until p.size - 1) s += dist(p[i], p[i + 1])
+                  return s
+              }
+              fun perimeter(p: List<FloatArray>): Double = if (p.size < 2) 0.0 else pathLen(p) + dist(p.last(), p.first())
+              fun area(p: List<FloatArray>): Double {
+                  if (p.size < 3) return 0.0
+                  var cx = 0.0; var cy = 0.0; var cz = 0.0
+                  for (i in p.indices) {
+                      val a = p[i]; val b = p[(i + 1) % p.size]
+                      cx += (a[1] * b[2] - a[2] * b[1]).toDouble()
+                      cy += (a[2] * b[0] - a[0] * b[2]).toDouble()
+                      cz += (a[0] * b[1] - a[1] * b[0]).toDouble()
+                  }
+                  return 0.5 * sqrt(cx * cx + cy * cy + cz * cz)
+              }
+          }
+
+          object Fmt {
+              private fun f(fmt: String, v: Double) = String.format(Locale.getDefault(), fmt, v)
+              fun len(raw: Double): String {
+                  val m = raw * Cfg.factor
+                  return when (Cfg.unit) {
+                      LengthUnit.CM -> f("%.1f cm", m * 100)
+                      LengthUnit.M -> f("%.3f m", m)
+                      LengthUnit.IN -> f("%.2f in", m / 0.0254)
+                      LengthUnit.FT -> f("%.2f ft", m / 0.3048)
+                  }
+              }
+              fun area(raw: Double): String {
+                  val a = raw * Cfg.factor * Cfg.factor
+                  return when (Cfg.unit) {
+                      LengthUnit.CM -> f("%.1f cm²", a * 10000)
+                      LengthUnit.M -> f("%.3f m²", a)
+                      LengthUnit.IN -> f("%.1f in²", a / 0.00064516)
+                      LengthUnit.FT -> f("%.2f ft²", a / 0.09290304)
+                  }
+              }
+          }
+
+          class Pt(val x: Float, val y: Float, val ok: Boolean, val w: FloatArray)
+          class DrawShape(val mode: Mode, val pts: List<Pt>)
+          class Snapshot(
+              val done: List<DrawShape>, val cur: DrawShape, val hit: Pt?, val tracking: Boolean,
+              val corners: List<Pt>?, val imgLabel: String?
+          )
+
+          class ArRenderer : GLSurfaceView.Renderer {
+              @Volatile var session: Session? = null
+              @Volatile var mode = Mode.LINE
+              @Volatile private var texNeedsSet = true
+              @Volatile private var vpChanged = true
+              var onFrame: ((Snapshot) -> Unit)? = null
+              var onCommit: ((Mode, List<FloatArray>) -> Unit)? = null
+              var onMsg: ((String) -> Unit)? = null
+
+              private val q = ConcurrentLinkedQueue<() -> Unit>()
+              private var w = 1
+              private var h = 1
+              private var prog = 0
+              private var tex = 0
+              private var aPos = 0
+              private var aTex = 0
+              private val quad: FloatBuffer = fb(floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f))
+              private val uv: FloatBuffer = ByteBuffer.allocateDirect(32).order(ByteOrder.nativeOrder()).asFloatBuffer()
+              private var db: AugmentedImageDatabase? = null
+              private val imgs = HashMap<Int, AugmentedImage>()
+              private var cur = ArrayList<Anchor>()
+              private val done = ArrayList<Pair<Mode, List<Anchor>>>()
+              private var lastHit: HitResult? = null
+              private val view = FloatArray(16)
+              private val proj = FloatArray(16)
+              private val vp = FloatArray(16)
+
+              private fun fb(a: FloatArray): FloatBuffer =
+                  ByteBuffer.allocateDirect(a.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply { put(a); position(0) }
+
+              fun reset() { texNeedsSet = true; vpChanged = true }
+
+              // ---- Befehle von der UI
+              fun place() { q.add { doPlace() } }
+              fun undo() { q.add { doUndo() } }
+              fun finish() { q.add { doFinish() } }
+              fun clearAll() { q.add { doClear() } }
+              fun setMode(m: Mode) { mode = m; q.add { cur.forEach { it.detach() }; cur = ArrayList() } }
+
+              fun addRef(name: String, bmp: Bitmap, widthM: Float) {
+                  q.add {
+                      val s = session
+                      if (s == null) {
+                          onMsg?.invoke("Keine AR-Session")
+                      } else {
+                          try {
+                              val d = db ?: AugmentedImageDatabase(s).also { db = it }
+                              d.addImage(name, bmp, widthM)
+                              val c = s.config
+                              c.augmentedImageDatabase = d
+                              s.configure(c)
+                              onMsg?.invoke("Referenz trainiert – richte die Kamera darauf")
+                          } catch (e: Exception) {
+                              onMsg?.invoke("Bild unbrauchbar (mehr Kontrast/Details nötig): ${e.message}")
+                          }
+                      }
+                  }
+              }
+
+              private fun doPlace() {
+                  val hit = lastHit ?: run { onMsg?.invoke("Keine Fläche erkannt"); return }
+                  cur.add(hit.createAnchor())
+                  if (mode == Mode.LINE && cur.size == 2) doFinish()
+              }
+
+              private fun doUndo() {
+                  if (cur.isNotEmpty()) {
+                      cur.removeAt(cur.size - 1).detach()
+                  } else if (done.isNotEmpty()) {
+                      done.removeAt(done.size - 1).second.forEach { it.detach() }
+                  }
+              }
+
+              private fun doFinish() {
+                  val need = if (mode == Mode.AREA) 3 else 2
+                  if (cur.size < need) { onMsg?.invoke("Zu wenige Punkte"); return }
+                  val ws = cur.map { it.pose.translation }
+                  done.add(Pair(mode, cur))
+                  cur = ArrayList()
+                  onCommit?.invoke(mode, ws)
+              }
+
+              private fun doClear() {
+                  cur.forEach { it.detach() }; cur = ArrayList()
+                  done.forEach { d -> d.second.forEach { it.detach() } }; done.clear()
+              }
+
+              // ---- GL
+              private fun sh(type: Int, src: String): Int {
+                  val s = GLES20.glCreateShader(type)
+                  GLES20.glShaderSource(s, src)
+                  GLES20.glCompileShader(s)
+                  return s
+              }
+
+              override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+                  GLES20.glClearColor(0f, 0f, 0f, 1f)
+                  val t = IntArray(1)
+                  GLES20.glGenTextures(1, t, 0)
+                  tex = t[0]
+                  GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, tex)
+                  GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+                  GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+                  GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+                  GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+                  val vs = "attribute vec4 a_Pos; attribute vec2 a_Tex; varying vec2 v_Tex; void main(){ gl_Position=a_Pos; v_Tex=a_Tex; }"
+                  val fs = "#extension GL_OES_EGL_image_external : require\n" +
+                      "precision mediump float; varying vec2 v_Tex; uniform samplerExternalOES s; void main(){ gl_FragColor=texture2D(s,v_Tex); }"
+                  prog = GLES20.glCreateProgram()
+                  GLES20.glAttachShader(prog, sh(GLES20.GL_VERTEX_SHADER, vs))
+                  GLES20.glAttachShader(prog, sh(GLES20.GL_FRAGMENT_SHADER, fs))
+                  GLES20.glLinkProgram(prog)
+                  aPos = GLES20.glGetAttribLocation(prog, "a_Pos")
+                  aTex = GLES20.glGetAttribLocation(prog, "a_Tex")
+                  texNeedsSet = true
+              }
+
+              override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
+                  GLES20.glViewport(0, 0, width, height)
+                  w = width; h = height; vpChanged = true
+              }
+
+              private fun drawBg(frame: Frame) {
+                  if (frame.hasDisplayGeometryChanged()) {
+                      quad.position(0)
+                      frame.transformCoordinates2d(
+                          Coordinates2d.OPENGL_NORMALIZED_DEVICE_COORDINATES, quad,
+                          Coordinates2d.TEXTURE_NORMALIZED, uv
+                      )
+                  }
+                  quad.position(0); uv.position(0)
+                  GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+                  GLES20.glUseProgram(prog)
+                  GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+                  GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, tex)
+                  GLES20.glVertexAttribPointer(aPos, 2, GLES20.GL_FLOAT, false, 0, quad)
+                  GLES20.glVertexAttribPointer(aTex, 2, GLES20.GL_FLOAT, false, 0, uv)
+                  GLES20.glEnableVertexAttribArray(aPos)
+                  GLES20.glEnableVertexAttribArray(aTex)
+                  GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+                  GLES20.glDisableVertexAttribArray(aPos)
+                  GLES20.glDisableVertexAttribArray(aTex)
+              }
+
+              private fun pr(wp: FloatArray): Pt {
+                  val v = floatArrayOf(wp[0], wp[1], wp[2], 1f)
+                  val o = FloatArray(4)
+                  Matrix.multiplyMV(o, 0, vp, 0, v, 0)
+                  if (o[3] <= 0.0001f) return Pt(0f, 0f, false, wp)
+                  return Pt((o[0] / o[3] + 1f) / 2f * w, (1f - o[1] / o[3]) / 2f * h, true, wp)
+              }
+
+              override fun onDrawFrame(gl: GL10?) {
+                  GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
+                  var r = q.poll()
+                  while (r != null) { r(); r = q.poll() }
+                  val s = session ?: return
+                  if (texNeedsSet) { s.setCameraTextureName(tex); texNeedsSet = false }
+                  if (vpChanged) { s.setDisplayGeometry(0, w, h); vpChanged = false }
+                  val frame = try { s.update() } catch (e: Exception) { return }
+                  drawBg(frame)
+
+                  val cam = frame.camera
+                  val tracking = cam.trackingState == TrackingState.TRACKING
+
+                  for (img in frame.getUpdatedTrackables(AugmentedImage::class.java)) {
+                      if (img.trackingState == TrackingState.TRACKING &&
+                          img.trackingMethod == AugmentedImage.TrackingMethod.FULL_TRACKING
+                      ) imgs[img.index] = img
+                      else imgs.remove(img.index)
+                  }
+
+                  lastHit = null
+                  if (tracking) {
+                      cam.getViewMatrix(view, 0)
+                      cam.getProjectionMatrix(proj, 0, 0.05f, 100f)
+                      Matrix.multiplyMM(vp, 0, proj, 0, view, 0)
+                      lastHit = frame.hitTest(w / 2f, h / 2f).firstOrNull {
+                          val t = it.trackable
+                          (t is Plane && t.isPoseInPolygon(it.hitPose)) || t is Point || t is DepthPoint
+                      }
+                  }
+
+                  val hitPt = lastHit?.let { pr(it.hitPose.translation) }
+                  val doneShapes = done.map { d -> DrawShape(d.first, d.second.map { pr(it.pose.translation) }) }
+                  val curShape = DrawShape(mode, cur.map { pr(it.pose.translation) })
+
+                  var corners: List<Pt>? = null
+                  var label: String? = null
+                  val img = imgs.values.firstOrNull()
+                  if (img != null) {
+                      val p = img.centerPose
+                      val ex = img.extentX / 2f
+                      val ez = img.extentZ / 2f
+                      corners = listOf(
+                          floatArrayOf(-ex, 0f, -ez), floatArrayOf(ex, 0f, -ez),
+                          floatArrayOf(ex, 0f, ez), floatArrayOf(-ex, 0f, ez)
+                      ).map { pr(p.transformPoint(it)) }
+                      label = String.format(Locale.getDefault(), "Referenz %.1f cm", img.extentX * 100)
+                  }
+                  onFrame?.invoke(Snapshot(doneShapes, curShape, hitPt, tracking, corners, label))
+              }
+          }
+          EOF
+
+          # ---------------------------------------------------------------- Overlay
+          cat > app/src/main/java/com/armesser/app/Overlay.kt <<'EOF'
+          package com.armesser.app
+
+          import android.content.Context
+          import android.graphics.*
+          import android.os.SystemClock
+          import android.view.View
+
+          class Overlay(ctx: Context) : View(ctx) {
+              @Volatile var snap: Snapshot? = null
+              private val d = ctx.resources.displayMetrics.density
+              private val cyan = 0xFF00E5FF.toInt()
+              private val pink = 0xFFFF2D95.toInt()
+              private val green = 0xFF7CFF6B.toInt()
+              private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val path = Path()
+
+              private fun seg(c: Canvas, a: Pt, b: Pt, color: Int, dashed: Boolean) {
+                  p.style = Paint.Style.STROKE
+                  p.strokeCap = Paint.Cap.ROUND
+                  if (dashed) p.pathEffect = DashPathEffect(floatArrayOf(14 * d, 10 * d), 0f)
+                  p.color = color; p.alpha = 70; p.strokeWidth = 9 * d
+                  c.drawLine(a.x, a.y, b.x, b.y, p)
+                  p.color = color; p.alpha = 255; p.strokeWidth = 2.5f * d
+                  c.drawLine(a.x, a.y, b.x, b.y, p)
+                  p.pathEffect = null
+              }
+
+              private fun dot(c: Canvas, q: Pt, color: Int) {
+                  p.style = Paint.Style.FILL
+                  p.color = color; p.alpha = 80; c.drawCircle(q.x, q.y, 12 * d, p)
+                  p.color = color; p.alpha = 255; c.drawCircle(q.x, q.y, 7 * d, p)
+                  p.color = Color.WHITE; c.drawCircle(q.x, q.y, 3.5f * d, p)
+              }
+
+              private fun label(c: Canvas, text: String, x: Float, y: Float, color: Int) {
+                  p.style = Paint.Style.FILL
+                  p.textSize = 13 * d
+                  p.typeface = Typeface.DEFAULT_BOLD
+                  p.textAlign = Paint.Align.CENTER
+                  val tw = p.measureText(text)
+                  val r = RectF(x - tw / 2 - 9 * d, y - 18 * d, x + tw / 2 + 9 * d, y + 6 * d)
+                  p.color = 0xD90A0F1E.toInt(); c.drawRoundRect(r, 12 * d, 12 * d, p)
+                  p.style = Paint.Style.STROKE; p.strokeWidth = 1.3f * d; p.color = color
+                  c.drawRoundRect(r, 12 * d, 12 * d, p)
+                  p.style = Paint.Style.FILL; p.color = Color.WHITE
+                  c.drawText(text, x, y, p)
+              }
+
+              private fun shape(c: Canvas, mode: Mode, pts: List<Pt>, live: Pt?, color: Int) {
+                  val all = if (live != null) pts + live else pts
+                  val n = all.size
+                  val closed = mode == Mode.AREA && n >= 3
+                  if (closed) {
+                      path.reset()
+                      var first = true
+                      for (q in all) {
+                          if (!q.ok) continue
+                          if (first) { path.moveTo(q.x, q.y); first = false } else path.lineTo(q.x, q.y)
+                      }
+                      path.close()
+                      p.style = Paint.Style.FILL; p.color = color; p.alpha = 55
+                      c.drawPath(path, p)
+                  }
+                  val segs = (n - 1) + if (closed) 1 else 0
+                  for (i in 0 until segs) {
+                      val a = all[i]; val b = all[(i + 1) % n]
+                      if (!a.ok || !b.ok) continue
+                      val isLive = live != null && i == n - 2
+                      seg(c, a, b, if (isLive) pink else color, isLive)
+                      label(c, Fmt.len(Geo.dist(a.w, b.w)), (a.x + b.x) / 2, (a.y + b.y) / 2 - 10 * d, if (isLive) pink else color)
+                  }
+                  if (closed && all.all { it.ok }) {
+                      val cx = all.map { it.x }.average().toFloat()
+                      val cy = all.map { it.y }.average().toFloat()
+                      label(c, Fmt.area(Geo.area(all.map { it.w })), cx, cy, pink)
+                  }
+                  for (q in pts) if (q.ok) dot(c, q, color)
+              }
+
+              override fun onDraw(c: Canvas) {
+                  val s = snap ?: return
+                  s.corners?.let { cs ->
+                      if (cs.all { it.ok }) {
+                          for (i in 0 until 4) seg(c, cs[i], cs[(i + 1) % 4], green, false)
+                          s.imgLabel?.let { label(c, it, cs[0].x, cs[0].y - 12 * d, green) }
+                      }
+                  }
+                  for (sh in s.done) shape(c, sh.mode, sh.pts, null, cyan)
+                  shape(c, s.cur.mode, s.cur.pts, if (s.cur.pts.isNotEmpty()) s.hit else null, cyan)
+
+                  // Zielkreuz
+                  val cx = width / 2f
+                  val cy = height / 2f
+                  val col = if (s.hit != null) cyan else 0xFFFF5C5C.toInt()
+                  p.style = Paint.Style.STROKE; p.strokeWidth = 2 * d; p.color = col; p.alpha = 255
+                  c.drawCircle(cx, cy, 26 * d, p)
+                  c.save()
+                  c.rotate((SystemClock.uptimeMillis() / 25 % 360).toFloat(), cx, cy)
+                  for (i in 0 until 4) {
+                      c.drawLine(cx + 32 * d, cy, cx + 44 * d, cy, p)
+                      c.rotate(90f, cx, cy)
+                  }
+                  c.restore()
+                  p.style = Paint.Style.FILL
+                  c.drawCircle(cx, cy, 3 * d, p)
+              }
+          }
+          EOF
+
+          # ---------------------------------------------------------------- MainActivity
+          cat > app/src/main/java/com/armesser/app/MainActivity.kt <<'EOF'
+          package com.armesser.app
+
+          import android.Manifest
+          import android.app.AlertDialog
+          import android.content.Context
+          import android.content.Intent
+          import android.content.SharedPreferences
+          import android.content.pm.PackageManager
+          import android.graphics.Bitmap
+          import android.graphics.BitmapFactory
+          import android.graphics.Color
+          import android.graphics.Typeface
+          import android.graphics.drawable.GradientDrawable
+          import android.net.Uri
+          import android.opengl.GLSurfaceView
+          import android.os.Bundle
+          import android.text.InputType
+          import android.view.Gravity
+          import android.view.HapticFeedbackConstants
+          import android.view.View
+          import android.view.ViewGroup
+          import android.view.WindowManager
+          import android.widget.EditText
+          import android.widget.FrameLayout
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import android.widget.Toast
+          import androidx.activity.ComponentActivity
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.core.view.WindowCompat
+          import androidx.core.view.WindowInsetsCompat
+          import androidx.core.view.WindowInsetsControllerCompat
+          import com.google.ar.core.ArCoreApk
+          import com.google.ar.core.Config
+          import com.google.ar.core.Session
+          import com.google.ar.core.exceptions.UnavailableException
+          import java.text.SimpleDateFormat
+          import java.util.Date
+          import java.util.Locale
+          import java.util.concurrent.atomic.AtomicBoolean
+
+          class MainActivity : ComponentActivity() {
+              private lateinit var glView: GLSurfaceView
+              private lateinit var overlay: Overlay
+              private lateinit var hud: TextView
+              private lateinit var status: TextView
+              private lateinit var unitChip: TextView
+              private lateinit var prefs: SharedPreferences
+              private val renderer = ArRenderer()
+              private var session: Session? = null
+              private var installRequested = false
+              private var lastSnap: Snapshot? = null
+              private val busy = AtomicBoolean(false)
+              private val modeChips = HashMap<Mode, TextView>()
+
+              private val picker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+                  if (uri != null) askRefWidth(uri)
+              }
+
+              private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+              private fun toast(t: String) = runOnUiThread { Toast.makeText(this, t, Toast.LENGTH_LONG).show() }
+
+              private fun chipBg(sel: Boolean) = GradientDrawable().apply {
+                  cornerRadius = dp(18).toFloat()
+                  setColor(if (sel) 0xFF00E5FF.toInt() else 0xB30A0F1E.toInt())
+                  setStroke(dp(1), 0xFF00E5FF.toInt())
+              }
+
+              private fun chip(t: String, onClick: () -> Unit) = TextView(this).apply {
+                  text = t
+                  setTextColor(Color.WHITE)
+                  textSize = 13f
+                  typeface = Typeface.DEFAULT_BOLD
+                  gravity = Gravity.CENTER
+                  setPadding(dp(14), dp(9), dp(14), dp(9))
+                  background = chipBg(false)
+                  setOnClickListener { it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY); onClick() }
+              }
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  prefs = getSharedPreferences("ar", Context.MODE_PRIVATE)
+                  Cfg.factor = prefs.getFloat("factor", 1f).toDouble()
+                  Cfg.unit = LengthUnit.values()[prefs.getInt("unit", 0).coerceIn(0, 3)]
+                  window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                  WindowCompat.setDecorFitsSystemWindows(window, false)
+
+                  val root = FrameLayout(this)
+                  glView = GLSurfaceView(this).apply {
+                      setEGLContextClientVersion(2)
+                      preserveEGLContextOnPause = true
+                      setEGLConfigChooser(8, 8, 8, 8, 16, 0)
+                      setRenderer(renderer)
+                      renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+                  }
+                  overlay = Overlay(this)
+                  root.addView(glView, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                  root.addView(overlay, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+
+                  // HUD oben
+                  val top = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
+                  hud = TextView(this).apply {
+                      text = "—"; textSize = 38f; typeface = Typeface.DEFAULT_BOLD
+                      setTextColor(0xFF00E5FF.toInt()); setShadowLayer(18f, 0f, 0f, 0xFF00E5FF.toInt())
+                      gravity = Gravity.CENTER
+                  }
+                  status = TextView(this).apply {
+                      textSize = 12f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+                      setPadding(dp(12), dp(5), dp(12), dp(5)); background = chipBg(false)
+                  }
+                  top.addView(hud)
+                  top.addView(status)
+                  root.addView(top, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(48) })
+
+                  // Rechte Werkzeugleiste
+                  val side = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                  fun add(v: View) = side.addView(v, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(8); gravity = Gravity.END })
+                  unitChip = chip(Cfg.unit.label) { cycleUnit() }
+                  add(unitChip)
+                  add(chip("⚖ Kalib.") { calibrate() })
+                  add(chip("🖼 Bild-Ref") { picker.launch("image/*") })
+                  add(chip("🕘 Verlauf") { showHistory() })
+                  add(chip("↗ Teilen") { share() })
+                  root.addView(side, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.TOP).apply { topMargin = dp(150); marginEnd = dp(12) })
+
+                  // Unten: Modi + Aktionen
+                  val bottom = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
+                  val modes = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                  for (m in Mode.values()) {
+                      val c = chip(m.label) { selectMode(m) }
+                      modeChips[m] = c
+                      modes.addView(c, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(4); marginEnd = dp(4) })
+                  }
+                  bottom.addView(modes, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(16) })
+
+                  val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                  val place = TextView(this).apply {
+                      text = "+"; textSize = 40f; typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
+                      setTextColor(0xFF0A0F1E.toInt())
+                      background = GradientDrawable().apply {
+                          shape = GradientDrawable.OVAL; setColor(0xFF00E5FF.toInt()); setStroke(dp(4), Color.WHITE)
+                      }
+                      setOnClickListener { it.performHapticFeedback(HapticFeedbackConstants.CONFIRM); renderer.place() }
+                  }
+                  val mg = { LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(6); marginEnd = dp(6) } }
+                  actions.addView(chip("↶") { renderer.undo() }, mg())
+                  actions.addView(chip("🗑") { renderer.clearAll() }, mg())
+                  actions.addView(place, LinearLayout.LayoutParams(dp(78), dp(78)).apply { marginStart = dp(8); marginEnd = dp(8) })
+                  actions.addView(chip("✓ Fertig") { renderer.finish() }, mg())
+                  bottom.addView(actions)
+                  root.addView(bottom, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(32) })
+
+                  setContentView(root)
+                  WindowInsetsControllerCompat(window, root).hide(WindowInsetsCompat.Type.systemBars())
+                  selectMode(Mode.LINE)
+
+                  renderer.onMsg = { toast(it) }
+                  renderer.onCommit = { mode, ws -> runOnUiThread { saveHistory(mode, ws) } }
+                  renderer.onFrame = { snap ->
+                      if (busy.compareAndSet(false, true)) {
+                          runOnUiThread {
+                              lastSnap = snap
+                              overlay.snap = snap
+                              overlay.invalidate()
+                              updateHud(snap)
+                              busy.set(false)
+                          }
+                      }
+                  }
+              }
+
+              private fun selectMode(m: Mode) {
+                  renderer.setMode(m)
+                  for ((k, v) in modeChips) {
+                      v.background = chipBg(k == m)
+                      v.setTextColor(if (k == m) 0xFF0A0F1E.toInt() else Color.WHITE)
+                  }
+              }
+
+              private fun updateHud(s: Snapshot) {
+                  val ws = s.cur.pts.map { it.w } + listOfNotNull(s.hit?.w)
+                  hud.text = if (s.cur.mode == Mode.AREA) {
+                      if (ws.size >= 3) Fmt.area(Geo.area(ws)) else "—"
+                  } else {
+                      if (ws.size >= 2) Fmt.len(Geo.pathLen(ws)) else "—"
+                  }
+                  var t = when {
+                      !s.tracking -> "Bewege das Handy langsam …"
+                      s.hit == null -> "Fläche suchen …"
+                      s.cur.mode == Mode.AREA && ws.size >= 3 -> "Umfang " + Fmt.len(Geo.perimeter(ws))
+                      else -> "Bereit"
+                  }
+                  if (Cfg.factor != 1.0) t += String.format(Locale.US, " · kalib. ×%.3f", Cfg.factor)
+                  s.imgLabel?.let { t += " · $it" }
+                  status.text = t
+              }
+
+              private fun cycleUnit() {
+                  val n = (Cfg.unit.ordinal + 1) % LengthUnit.values().size
+                  Cfg.unit = LengthUnit.values()[n]
+                  prefs.edit().putInt("unit", n).apply()
+                  unitChip.text = Cfg.unit.label
+              }
+
+              // ---- Kalibrierung mit bekannter Strecke
+              private fun calibrate() {
+                  val s = lastSnap
+                  val sh = s?.done?.lastOrNull { it.pts.size >= 2 } ?: s?.cur?.takeIf { it.pts.size >= 2 }
+                  if (sh == null) {
+                      toast("Miss erst ein Objekt mit bekannter Länge (z. B. Kreditkarte = 8,56 cm), dann kalibriere.")
+                      return
+                  }
+                  val raw = Geo.dist(sh.pts[0].w, sh.pts[1].w)
+                  val et = EditText(this).apply {
+                      inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+                      hint = "Echte Länge in cm"; setText("8.56")
+                  }
+                  AlertDialog.Builder(this)
+                      .setTitle("Kalibrieren")
+                      .setMessage(String.format(Locale.getDefault(), "Gemessen (roh): %.2f cm\nAktueller Faktor: ×%.3f", raw * 100, Cfg.factor))
+                      .setView(et)
+                      .setPositiveButton("Übernehmen") { _, _ ->
+                          val real = et.text.toString().replace(',', '.').toDoubleOrNull()
+                          if (real != null && real > 0 && raw > 0) {
+                              Cfg.factor = real / 100.0 / raw
+                              prefs.edit().putFloat("factor", Cfg.factor.toFloat()).apply()
+                              toast(String.format(Locale.US, "Kalibriert: ×%.3f", Cfg.factor))
+                          }
+                      }
+                      .setNeutralButton("Zurücksetzen") { _, _ ->
+                          Cfg.factor = 1.0; prefs.edit().putFloat("factor", 1f).apply(); toast("Faktor zurückgesetzt")
+                      }
+                      .setNegativeButton("Abbrechen", null)
+                      .show()
+              }
+
+              // ---- Trainingsbild mit bekannter Größe
+              private fun askRefWidth(uri: Uri) {
+                  val et = EditText(this).apply {
+                      inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+                      hint = "Breite in cm"; setText("10")
+                  }
+                  AlertDialog.Builder(this)
+                      .setTitle("Referenzbild")
+                      .setMessage("Wie breit ist das Bild in echt (gedruckt/auf dem Objekt)?")
+                      .setView(et)
+                      .setPositiveButton("Trainieren") { _, _ ->
+                          val wcm = et.text.toString().replace(',', '.').toFloatOrNull()
+                          if (wcm == null || wcm <= 0f) { toast("Ungültige Breite"); return@setPositiveButton }
+                          val bmp: Bitmap? = try {
+                              contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+                          } catch (e: Exception) { null }
+                          if (bmp == null) { toast("Bild konnte nicht geladen werden"); return@setPositiveButton }
+                          val big = maxOf(bmp.width, bmp.height)
+                          val sc = if (big > 1024) Bitmap.createScaledBitmap(bmp, bmp.width * 1024 / big, bmp.height * 1024 / big, true) else bmp
+                          renderer.addRef("ref" + (System.currentTimeMillis() % 100000), sc, wcm / 100f)
+                      }
+                      .setNegativeButton("Abbrechen", null)
+                      .show()
+              }
+
+              // ---- Verlauf
+              private fun history(): List<String> =
+                  (prefs.getString("hist", "") ?: "").split("\n").filter { it.isNotBlank() }
+
+              private fun saveHistory(mode: Mode, ws: List<FloatArray>) {
+                  val v = when (mode) {
+                      Mode.AREA -> Fmt.area(Geo.area(ws)) + " (Umfang " + Fmt.len(Geo.perimeter(ws)) + ")"
+                      else -> Fmt.len(Geo.pathLen(ws))
+                  }
+                  val line = SimpleDateFormat("dd.MM. HH:mm", Locale.getDefault()).format(Date()) + " · " + mode.label + ": " + v
+                  val all = (history() + line).takeLast(100)
+                  prefs.edit().putString("hist", all.joinToString("\n")).apply()
+                  toast("Gespeichert: $v")
+              }
+
+              private fun showHistory() {
+                  val items = history().reversed()
+                  val b = AlertDialog.Builder(this).setTitle("Verlauf")
+                  if (items.isEmpty()) b.setMessage("Noch keine Messungen.") else b.setItems(items.toTypedArray(), null)
+                  b.setNeutralButton("Leeren") { _, _ -> prefs.edit().putString("hist", "").apply() }
+                  b.setPositiveButton("Schließen", null)
+                  b.show()
+              }
+
+              private fun share() {
+                  val items = history().reversed()
+                  if (items.isEmpty()) { toast("Noch nichts zu teilen"); return }
+                  val i = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, items.joinToString("\n")) }
+                  startActivity(Intent.createChooser(i, "Messungen teilen"))
+              }
+
+              // ---- Lifecycle / ARCore
+              private fun startAr(): Boolean {
+                  try {
+                      if (session == null) {
+                          when (ArCoreApk.getInstance().requestInstall(this, !installRequested)) {
+                              ArCoreApk.InstallStatus.INSTALL_REQUESTED -> { installRequested = true; return false }
+                              ArCoreApk.InstallStatus.INSTALLED -> {}
+                          }
+                          val s = Session(this)
+                          val c = Config(s)
+                          c.planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
+                          c.updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
+                          c.focusMode = Config.FocusMode.AUTO
+                          if (s.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) c.depthMode = Config.DepthMode.AUTOMATIC
+                          s.configure(c)
+                          session = s
+                          renderer.session = s
+                      }
+                      session?.resume()
+                      return true
+                  } catch (e: UnavailableException) {
+                      toast("ARCore nicht verfügbar: ${e.message}")
+                  } catch (e: Exception) {
+                      toast("AR-Fehler: ${e.message}")
+                  }
+                  return false
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                      requestPermissions(arrayOf(Manifest.permission.CAMERA), 1)
+                      return
+                  }
+                  if (!startAr()) return
+                  renderer.reset()
+                  glView.onResume()
+              }
+
+              override fun onPause() {
+                  super.onPause()
+                  glView.onPause()
+                  session?.pause()
+              }
+
+              override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, res: IntArray) {
+                  super.onRequestPermissionsResult(code, perms, res)
+                  if (res.isEmpty() || res[0] != PackageManager.PERMISSION_GRANTED) toast("Ohne Kamera kann die App nicht messen.")
+              }
+          }
+          EOF
+
+          echo "Projekt erzeugt:"
+          find app -type f | sort
+
+      - name: APK bauen
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: APK hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: AR-Messer-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
