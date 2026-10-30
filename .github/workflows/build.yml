@@ -90,7 +90,10 @@ jobs:
                   android:icon="@mipmap/ic_launcher"
                   android:roundIcon="@mipmap/ic_launcher"
                   android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
-                  <activity android:name=".MainActivity" android:exported="true">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:windowSoftInputMode="adjustResize">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN"/>
                           <category android:name="android.intent.category.LAUNCHER"/>
@@ -146,41 +149,59 @@ jobs:
           import android.app.Service
           import android.content.Intent
           import android.content.pm.ServiceInfo
+          import android.graphics.Bitmap
+          import android.graphics.BitmapFactory
           import android.net.wifi.WifiManager
           import android.os.Build
           import android.os.IBinder
           import android.os.PowerManager
           import android.os.SystemClock
+          import android.util.Base64
+          import org.json.JSONObject
+          import java.io.ByteArrayOutputStream
+          import java.io.DataOutputStream
+          import java.io.EOFException
+          import java.io.InputStream
+          import java.io.OutputStream
           import java.net.DatagramPacket
           import java.net.DatagramSocket
           import java.net.InetSocketAddress
+          import java.net.Socket
           import java.nio.ByteBuffer
           import java.util.concurrent.ConcurrentHashMap
           import java.util.concurrent.Executors
 
+          class JavaInfo(val online: Int, val max: Int, val motd: String, val icon: Bitmap?, val ping: Long)
+
           /**
-           * Meldet per RakNet-Broadcast (UDP 19132) eine LAN-Welt im WLAN an und
-           * leitet alle Pakete der Konsole 1:1 an den Bedrock-Server weiter.
-           * Version/MOTD/Spielerzahl werden direkt vom echten Server uebernommen,
-           * deshalb passt es automatisch zur aktuellen Minecraft-Version.
+           * 1) Fragt den Server live ab (Java Status-Ping per TCP: Icon, Spieler, MOTD;
+           *    Bedrock RakNet-Ping per UDP: Ping + Version).
+           * 2) Meldet im WLAN eine LAN-Welt an (UDP 19132) und leitet alle Pakete der
+           *    Konsole an den Bedrock-Port des Servers weiter.
            */
           class ProxyService : Service() {
 
               companion object {
-                  // >>> HIER Server-Adresse aendern <<<
-                  const val HOST = "flammosmp.net"
-                  const val PORT = 19132
+                  const val LAN_PORT = 19132
 
                   val MAGIC = byteArrayOf(0, -1, -1, 0, -2, -2, -2, -2, -3, -3, -3, -3, 0x12, 0x34, 0x56, 0x78)
 
+                  @Volatile var host = ""
+                  @Volatile var javaPort = 25565
+                  @Volatile var bedrockPort = 19132
+
                   @Volatile var running = false
                   @Volatile var turbo = false
+                  @Volatile var polled = false
+                  @Volatile var reachable = false
+                  @Volatile var javaOk = false
                   @Volatile var players = -1
-                  @Volatile var maxPlayers = 50
+                  @Volatile var maxPlayers = -1
                   @Volatile var pingMs = -1L
                   @Volatile var startTime = 0L
                   @Volatile var lastConsole = 0L
-                  @Volatile var motd = "FlammoSMP"
+                  @Volatile var motd = ""
+                  @Volatile var favicon: Bitmap? = null
                   @Volatile var error = ""
                   @Volatile var instance: ProxyService? = null
 
@@ -193,12 +214,13 @@ jobs:
                       return b.array()
                   }
 
+                  /** Bedrock (RakNet) Ping an den echten Server. */
                   fun exchange(req: ByteArray): Pair<ByteArray, Long>? {
                       return try {
                           val s = DatagramSocket()
                           try {
                               s.soTimeout = 1500
-                              val addr = InetSocketAddress(HOST, PORT)
+                              val addr = InetSocketAddress(host, bedrockPort)
                               if (addr.isUnresolved) return null
                               val t0 = System.nanoTime()
                               s.send(DatagramPacket(req, req.size, addr))
@@ -219,10 +241,119 @@ jobs:
                       val len = ((d[33].toInt() and 0xFF) shl 8) or (d[34].toInt() and 0xFF)
                       val str = String(d, 35, minOf(len, d.size - 35), Charsets.UTF_8)
                       val p = str.split(";")
-                      if (p.size > 5) {
-                          motd = p[1]
+                      if (!javaOk && p.size > 5) {
                           players = p[4].toIntOrNull() ?: players
                           maxPlayers = p[5].toIntOrNull() ?: maxPlayers
+                          if (motd.isBlank()) motd = p[1].replace(Regex("§."), "")
+                      }
+                  }
+
+                  private fun writeVarInt(o: OutputStream, v: Int) {
+                      var x = v
+                      while (true) {
+                          if ((x and 0x7F.inv()) == 0) { o.write(x); return }
+                          o.write((x and 0x7F) or 0x80)
+                          x = x ushr 7
+                      }
+                  }
+
+                  private fun readVarInt(i: InputStream): Int {
+                      var n = 0
+                      var shift = 0
+                      while (true) {
+                          val b = i.read()
+                          if (b < 0) throw EOFException()
+                          n = n or ((b and 0x7F) shl shift)
+                          if ((b and 0x80) == 0) return n
+                          shift += 7
+                          if (shift > 35) throw RuntimeException("VarInt")
+                      }
+                  }
+
+                  private fun sendPacket(o: OutputStream, body: ByteArray) {
+                      val b = ByteArrayOutputStream()
+                      writeVarInt(b, body.size)
+                      b.write(body)
+                      o.write(b.toByteArray())
+                      o.flush()
+                  }
+
+                  private fun plain(o: Any?): String {
+                      return when (o) {
+                          is String -> o
+                          is JSONObject -> {
+                              val sb = StringBuilder(o.optString("text", ""))
+                              val ex = o.optJSONArray("extra")
+                              if (ex != null) for (i in 0 until ex.length()) sb.append(plain(ex.opt(i)))
+                              sb.toString()
+                          }
+                          else -> ""
+                      }
+                  }
+
+                  /** Java Server-List-Ping (TCP): Spielerzahl, MOTD, Server-Icon, Ping. */
+                  fun javaStatus(): JavaInfo? {
+                      return try {
+                          val s = Socket()
+                          try {
+                              s.connect(InetSocketAddress(host, javaPort), 3000)
+                              s.soTimeout = 3000
+                              val out = s.getOutputStream()
+                              val inp = s.getInputStream()
+
+                              val hs = ByteArrayOutputStream()
+                              writeVarInt(hs, 0)
+                              writeVarInt(hs, -1)
+                              val hb = host.toByteArray(Charsets.UTF_8)
+                              writeVarInt(hs, hb.size)
+                              hs.write(hb)
+                              hs.write(javaPort shr 8)
+                              hs.write(javaPort and 0xFF)
+                              writeVarInt(hs, 1)
+                              sendPacket(out, hs.toByteArray())
+                              sendPacket(out, byteArrayOf(0))
+
+                              readVarInt(inp)
+                              readVarInt(inp)
+                              val len = readVarInt(inp)
+                              val buf = ByteArray(len)
+                              var off = 0
+                              while (off < len) {
+                                  val r = inp.read(buf, off, len - off)
+                                  if (r < 0) throw EOFException()
+                                  off += r
+                              }
+                              val json = JSONObject(String(buf, Charsets.UTF_8))
+
+                              val t0 = System.nanoTime()
+                              val pb = ByteArrayOutputStream()
+                              writeVarInt(pb, 1)
+                              DataOutputStream(pb).writeLong(t0)
+                              sendPacket(out, pb.toByteArray())
+                              var ping = -1L
+                              try {
+                                  readVarInt(inp)
+                                  readVarInt(inp)
+                                  ping = (System.nanoTime() - t0) / 1_000_000
+                              } catch (e: Exception) { }
+
+                              val pl = json.optJSONObject("players")
+                              val motdText = plain(json.opt("description"))
+                                  .replace(Regex("§."), "")
+                                  .replace("\n", " | ")
+                                  .trim()
+                              var icon: Bitmap? = null
+                              val fav = json.optString("favicon", "")
+                              if (fav.startsWith("data:image") && fav.contains(",")) {
+                                  val bytes = Base64.decode(fav.substringAfter(","), Base64.DEFAULT)
+                                  icon = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                              }
+                              JavaInfo(pl?.optInt("online", -1) ?: -1, pl?.optInt("max", -1) ?: -1, motdText, icon, ping)
+                          } finally {
+                              s.close()
+                          }
+                      } catch (e: Exception) {
+                          null
                       }
                   }
               }
@@ -248,8 +379,15 @@ jobs:
                   running = true
                   error = ""
                   instance = this
+                  remote = null
+                  polled = false
+                  reachable = false
+                  javaOk = false
                   players = -1
+                  maxPlayers = -1
                   pingMs = -1
+                  motd = ""
+                  favicon = null
                   startTime = SystemClock.elapsedRealtime()
                   lastConsole = 0
 
@@ -260,15 +398,30 @@ jobs:
                   applyTurbo()
 
                   pool.execute { loop() }
-                  pool.execute {
-                      try {
-                          while (running) {
-                              exchange(buildPing())?.let { pingMs = it.second; parsePong(it.first) }
-                              Thread.sleep(5000)
-                          }
-                      } catch (e: Exception) { }
-                  }
+                  pool.execute { poll() }
                   return START_NOT_STICKY
+              }
+
+              /** Live-Daten alle 3 Sekunden vom Server holen. */
+              private fun poll() {
+                  try {
+                      while (running) {
+                          val j = javaStatus()
+                          val b = exchange(buildPing())
+                          javaOk = j != null
+                          if (b != null) { pingMs = b.second; parsePong(b.first) }
+                          if (j != null) {
+                              if (j.online >= 0) players = j.online
+                              if (j.max >= 0) maxPlayers = j.max
+                              if (j.motd.isNotBlank()) motd = j.motd
+                              if (j.icon != null) favicon = j.icon
+                              if (b == null && j.ping >= 0) pingMs = j.ping
+                          }
+                          reachable = j != null || b != null
+                          polled = true
+                          Thread.sleep(3000)
+                      }
+                  } catch (e: Exception) { }
               }
 
               @Suppress("DEPRECATION")
@@ -291,7 +444,7 @@ jobs:
                       val s = DatagramSocket(null)
                       s.reuseAddress = true
                       s.broadcast = true
-                      s.bind(InetSocketAddress(PORT))
+                      s.bind(InetSocketAddress(LAN_PORT))
                       sock = s
                       val buf = ByteArray(4096)
                       while (running) {
@@ -312,11 +465,10 @@ jobs:
                   running = false
               }
 
+              /** Konsole sucht LAN-Welten: mit der echten Server-Antwort beantworten. */
               private fun ping(s: DatagramSocket, req: ByteArray, to: InetSocketAddress) {
                   try {
                       val r = exchange(req) ?: return
-                      pingMs = r.second
-                      parsePong(r.first)
                       s.send(DatagramPacket(r.first, r.first.size, to))
                   } catch (e: Exception) { }
               }
@@ -341,7 +493,7 @@ jobs:
                       }
                       u
                   }
-                  val r = remote ?: InetSocketAddress(HOST, PORT).also { remote = it }
+                  val r = remote ?: InetSocketAddress(host, bedrockPort).also { remote = it }
                   up.send(DatagramPacket(data, data.size, r))
               }
 
@@ -389,8 +541,11 @@ jobs:
 
           import android.app.Activity
           import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.graphics.Bitmap
           import android.graphics.Color
           import android.graphics.LinearGradient
+          import android.graphics.Outline
           import android.graphics.Shader
           import android.graphics.Typeface
           import android.graphics.drawable.GradientDrawable
@@ -403,9 +558,12 @@ jobs:
           import android.os.Looper
           import android.os.SystemClock
           import android.provider.Settings
+          import android.text.InputType
           import android.view.Gravity
           import android.view.View
+          import android.view.ViewOutlineProvider
           import android.widget.Button
+          import android.widget.EditText
           import android.widget.ImageView
           import android.widget.LinearLayout
           import android.widget.ScrollView
@@ -417,6 +575,7 @@ jobs:
 
               private val handler = Handler(Looper.getMainLooper())
               private lateinit var dot: View
+              private lateinit var iconIv: ImageView
               private lateinit var statusTv: TextView
               private lateinit var nameTv: TextView
               private lateinit var motdTv: TextView
@@ -427,6 +586,10 @@ jobs:
               private lateinit var connectBtn: Button
               private lateinit var checkTv: TextView
               private lateinit var turboSw: Switch
+              private lateinit var ipEt: EditText
+              private lateinit var jpEt: EditText
+              private lateinit var bpEt: EditText
+              private var shownIcon: Bitmap? = null
 
               private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
               private fun col(s: String) = Color.parseColor(s)
@@ -460,6 +623,19 @@ jobs:
                   typeface = Typeface.DEFAULT_BOLD; background = shape(bg, 28)
               }
 
+              private fun edit(hintText: String, value: String, number: Boolean) = EditText(this).apply {
+                  hint = hintText
+                  setText(value)
+                  setTextColor(Color.WHITE)
+                  setHintTextColor(col("#99FFFFFF"))
+                  textSize = 16f
+                  setSingleLine()
+                  background = shape("#22FFFFFF", 16, "#44FFFFFF")
+                  setPadding(dp(14), dp(12), dp(14), dp(12))
+                  inputType = if (number) InputType.TYPE_CLASS_NUMBER
+                  else InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+              }
+
               private fun stat(label: String, value: TextView, start: Int): LinearLayout =
                   vbox().apply {
                       setPadding(dp(14), dp(12), dp(14), dp(12))
@@ -472,6 +648,7 @@ jobs:
                   super.onCreate(savedInstanceState)
                   val need = needed()
                   if (need.isNotEmpty()) requestPermissions(need, 1)
+                  val prefs = getSharedPreferences("flammo", MODE_PRIVATE)
 
                   val root = vbox().apply { setPadding(dp(20), dp(24), dp(20), dp(28)) }
                   val scroll = ScrollView(this).apply {
@@ -493,13 +670,35 @@ jobs:
                   root.addView(title)
                   root.addView(tv("Dein Server auf der Konsole – ohne Werbung", 14f, "#DDFFFFFF"))
 
+                  // ---- Server eingeben ----
+                  root.addView(tv("SERVER", 12f, "#CCFFFFFF", true).apply { letterSpacing = 0.15f }, lp(top = 20))
+                  val cIn = card()
+                  root.addView(cIn, lp(top = 8))
+                  ipEt = edit("Server-IP oder Domain", prefs.getString("host", "") ?: "", false)
+                  cIn.addView(ipEt)
+                  val prow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                  jpEt = edit("Java-Port", prefs.getString("jp", "25565") ?: "25565", true)
+                  bpEt = edit("Bedrock-Port", prefs.getString("bp", "19132") ?: "19132", true)
+                  prow.addView(jpEt, lp(0, -2, 1f))
+                  prow.addView(bpEt, lp(0, -2, 1f, 0, 10))
+                  cIn.addView(prow, lp(top = 10))
+
                   // ---- Server-Karte ----
                   val c1 = card()
-                  root.addView(c1, lp(top = 20))
+                  root.addView(c1, lp(top = 16))
 
                   val row = hbox()
-                  val icon = ImageView(this).apply { setImageResource(R.mipmap.ic_launcher) }
-                  row.addView(icon, lp(dp(64), dp(64)))
+                  iconIv = ImageView(this).apply {
+                      setImageResource(R.mipmap.ic_launcher)
+                      scaleType = ImageView.ScaleType.FIT_XY
+                      outlineProvider = object : ViewOutlineProvider() {
+                          override fun getOutline(v: View, o: Outline) {
+                              o.setRoundRect(0, 0, v.width, v.height, dp(14).toFloat())
+                          }
+                      }
+                      clipToOutline = true
+                  }
+                  row.addView(iconIv, lp(dp(64), dp(64)))
                   val info = vbox()
                   val st = hbox()
                   dot = View(this)
@@ -507,7 +706,7 @@ jobs:
                   statusTv = tv("GETRENNT", 12f, "#CCFFFFFF", true).apply { letterSpacing = 0.15f }
                   st.addView(statusTv, lp(start = 8))
                   info.addView(st)
-                  nameTv = tv("FlammoSMP", 24f, bold = true)
+                  nameTv = tv("FlammoSMP", 22f, bold = true)
                   info.addView(nameTv)
                   row.addView(info, lp(0, -2, 1f, 0, 14))
                   c1.addView(row)
@@ -517,7 +716,7 @@ jobs:
                   infoTv = tv("", 15f, "#DDFFFFFF")
                   c1.addView(infoTv, lp(top = 8))
 
-                  playersTv = tv("–/50", 20f, bold = true)
+                  playersTv = tv("–/–", 20f, bold = true)
                   pingTv = tv("– ms", 20f, bold = true)
                   uptimeTv = tv("00:00:00", 20f, bold = true)
                   val stats = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -565,15 +764,9 @@ jobs:
                   allBtn.setOnClickListener { turboSw.isChecked = true; check() }
 
                   root.addView(
-                      tv("So geht's: 1) Handy und PS5 im selben WLAN. 2) „Verbinden“ tippen. 3) Minecraft auf der PS5 öffnen → Freunde → LAN-Spiele → FlammoSMP.", 13f, "#CCFFFFFF"),
+                      tv("So geht's: 1) Server-IP und Ports eintragen. 2) Handy und PS5 im selben WLAN, „Verbinden“ tippen. 3) Minecraft auf der PS5 öffnen → Freunde → LAN-Spiele.", 13f, "#CCFFFFFF"),
                       lp(top = 20)
                   )
-              }
-
-              private fun isWifi(): Boolean {
-                  val cm = getSystemService(ConnectivityManager::class.java)
-                  val caps = cm.getNetworkCapabilities(cm.activeNetwork)
-                  return caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
               }
 
               // Berechtigungen: "Geräte in der Nähe" / lokales Netzwerk + Benachrichtigungen
@@ -584,14 +777,38 @@ jobs:
                       list.add("android.permission.NEARBY_WIFI_DEVICES")
                   }
                   if (Build.VERSION.SDK_INT >= 36) list.add("android.permission.ACCESS_LOCAL_NETWORK")
-                  return list.filter { checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED }
+                  return list.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
                       .toTypedArray()
+              }
+
+              private fun isWifi(): Boolean {
+                  val cm = getSystemService(ConnectivityManager::class.java)
+                  val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+                  return caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+              }
+
+              /** Liest IP + Ports aus den Feldern, speichert sie und gibt sie an den Dienst weiter. */
+              private fun applyInputs(): Boolean {
+                  val h = ipEt.text.toString().trim()
+                  val jp = jpEt.text.toString().trim().toIntOrNull()
+                  val bp = bpEt.text.toString().trim().toIntOrNull()
+                  if (h.isEmpty() || jp == null || bp == null || jp !in 1..65535 || bp !in 1..65535) {
+                      Toast.makeText(this, "Bitte Server-IP, Java-Port und Bedrock-Port eingeben", Toast.LENGTH_LONG).show()
+                      return false
+                  }
+                  getSharedPreferences("flammo", MODE_PRIVATE).edit()
+                      .putString("host", h).putString("jp", jp.toString()).putString("bp", bp.toString()).apply()
+                  ProxyService.host = h
+                  ProxyService.javaPort = jp
+                  ProxyService.bedrockPort = bp
+                  return true
               }
 
               private fun toggle() {
                   if (ProxyService.running) {
                       startService(Intent(this, ProxyService::class.java).setAction("STOP"))
                   } else {
+                      if (!applyInputs()) return
                       val need = needed().filter { it != "android.permission.POST_NOTIFICATIONS" }
                       if (need.isNotEmpty()) {
                           Toast.makeText(this, "Bitte „Geräte in der Nähe“ / lokales Netzwerk erlauben", Toast.LENGTH_LONG).show()
@@ -609,18 +826,19 @@ jobs:
               }
 
               private fun check() {
+                  if (!ProxyService.running && !applyInputs()) return
                   checkTv.text = "Prüfe Verbindung …"
                   Thread {
-                      val r = ProxyService.exchange(ProxyService.buildPing())
+                      val b = ProxyService.exchange(ProxyService.buildPing())
+                      val j = ProxyService.javaStatus()
                       val wm = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
                       @Suppress("DEPRECATION") val wi = wm.connectionInfo
                       val sb = StringBuilder()
-                      if (r == null) sb.append("Server nicht erreichbar.")
-                      else {
-                          sb.append("Server erreichbar · ${r.second} ms")
-                          if (r.second > 80) sb.append(" (hoch – näher an den Router, 5-GHz-WLAN nutzen)")
-                      }
-                      sb.append("\nWLAN: ${wi.rssi} dBm · ${wi.linkSpeed} Mbit/s")
+                      sb.append(if (j != null) "Java (${ProxyService.javaPort}): erreichbar · ${j.ping} ms\n" else "Java (${ProxyService.javaPort}): nicht erreichbar\n")
+                      sb.append(if (b != null) "Bedrock (${ProxyService.bedrockPort}): erreichbar · ${b.second} ms\n" else "Bedrock (${ProxyService.bedrockPort}): nicht erreichbar\n")
+                      val best = b?.second ?: j?.ping ?: -1L
+                      if (best > 80) sb.append("Ping hoch – näher an den Router, 5-GHz-WLAN nutzen\n")
+                      sb.append("WLAN: ${wi.rssi} dBm · ${wi.linkSpeed} Mbit/s")
                       runOnUiThread { checkTv.text = sb.toString() }
                   }.start()
               }
@@ -632,17 +850,33 @@ jobs:
                       setColor(col(if (on) "#3DDC97" else "#9E9E9E"))
                   }
                   statusTv.text = if (on) "VERBUNDEN" else "GETRENNT"
-                  motdTv.text = "🔥 " + ProxyService.motd + " | " + ProxyService.HOST
+                  nameTv.text = if (on && ProxyService.host.isNotEmpty()) ProxyService.host else "FlammoSMP"
+                  motdTv.text = if (on && ProxyService.motd.isNotBlank()) ProxyService.motd
+                  else "Serverdaten erscheinen nach dem Verbinden"
+
+                  ipEt.isEnabled = !on; jpEt.isEnabled = !on; bpEt.isEnabled = !on
+
+                  val f = ProxyService.favicon
+                  if (on && f != null) {
+                      if (f !== shownIcon) { iconIv.setImageBitmap(f); shownIcon = f }
+                  } else if (shownIcon != null) {
+                      iconIv.setImageResource(R.mipmap.ic_launcher); shownIcon = null
+                  }
+
                   val now = SystemClock.elapsedRealtime()
                   infoTv.text = when {
                       ProxyService.error.isNotEmpty() -> ProxyService.error
-                      !on -> "Nicht aktiv – tippe auf „Verbinden“"
+                      !on -> "Nicht aktiv – Server eintragen und „Verbinden“ tippen"
+                      !ProxyService.polled -> "Rufe Serverdaten ab …"
+                      !ProxyService.reachable -> "Server nicht erreichbar – IP und Ports prüfen"
                       ProxyService.lastConsole > 0 && now - ProxyService.lastConsole < 30000 -> "Konsole verbunden – viel Spaß!"
                       else -> "Wartet auf die Konsole · PlayStation: Freunde → LAN-Spiele"
                   }
                   val up = if (on) (now - ProxyService.startTime) / 1000 else 0
                   uptimeTv.text = String.format("%02d:%02d:%02d", up / 3600, up % 3600 / 60, up % 60)
-                  playersTv.text = if (on && ProxyService.players >= 0) "${ProxyService.players}/${ProxyService.maxPlayers}" else "–/${ProxyService.maxPlayers}"
+                  playersTv.text = if (on && ProxyService.players >= 0) {
+                      if (ProxyService.maxPlayers >= 0) "${ProxyService.players}/${ProxyService.maxPlayers}" else "${ProxyService.players}"
+                  } else "–/–"
                   pingTv.text = if (on && ProxyService.pingMs >= 0) "${ProxyService.pingMs} ms" else "– ms"
                   connectBtn.text = if (on) "Trennen" else "Verbinden"
               }
