@@ -1,8 +1,8 @@
-name: Build FunkApp APK
+name: Build FlammoSMP APK
 
 on:
   push:
-    branches: [main, master]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -20,347 +20,630 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Projekt (Code) erzeugen
+      - name: Projekt erzeugen
         run: |
-          set -e
-          mkdir -p app/src/main/java/com/example/funkapp app/src/main/res/values app/src/main/res/layout
+          mkdir -p app/src/main/java/com/flammosmp/app
+          mkdir -p app/src/main/res/mipmap-anydpi-v26
+          mkdir -p app/src/main/res/drawable
 
-          cat > settings.gradle.kts <<'EOF'
-          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
-          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
-          rootProject.name = "FunkApp"
-          include(":app")
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "FlammoSMP"
+          include ':app'
           EOF
 
-          cat > build.gradle.kts <<'EOF'
+          cat > build.gradle <<'EOF'
           plugins {
-              id("com.android.application") version "8.5.2" apply false
-              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+              id 'com.android.application' version '8.5.2' apply false
+              id 'org.jetbrains.kotlin.android' version '1.9.24' apply false
           }
           EOF
 
           cat > gradle.properties <<'EOF'
-          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
-          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=false
           EOF
 
-          cat > app/build.gradle.kts <<'EOF'
+          cat > app/build.gradle <<'EOF'
           plugins {
-              id("com.android.application")
-              id("org.jetbrains.kotlin.android")
+              id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
           }
           android {
-              namespace = "com.example.funkapp"
-              compileSdk = 34
+              namespace 'com.flammosmp.app'
+              compileSdk 34
               defaultConfig {
-                  applicationId = "com.example.funkapp"
-                  minSdk = 26
-                  targetSdk = 34
-                  versionCode = 1
-                  versionName = "1.0"
+                  applicationId 'com.flammosmp.app'
+                  minSdk 26
+                  targetSdk 34
+                  versionCode 1
+                  versionName '26.60'
               }
               compileOptions {
-                  sourceCompatibility = JavaVersion.VERSION_17
-                  targetCompatibility = JavaVersion.VERSION_17
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
               }
-              kotlinOptions { jvmTarget = "17" }
-          }
-          dependencies {
-              implementation("androidx.core:core-ktx:1.13.1")
-              implementation("androidx.appcompat:appcompat:1.7.0")
-              implementation("com.google.android.material:material:1.12.0")
-              // Audio-Transport fuer den Live-Anruf. Reine Client-Bibliothek -
-              // du brauchst zusaetzlich einen eigenen Signaling-Server (siehe Hinweis unten),
-              // sonst finden sich die zwei Geraete nicht.
-              implementation("io.getstream:stream-webrtc-android:1.1.1")
+              kotlinOptions { jvmTarget = '17' }
           }
           EOF
 
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-              <uses-permission android:name="android.permission.RECORD_AUDIO" />
-              <uses-permission android:name="android.permission.INTERNET" />
-              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-              <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+              <uses-permission android:name="android.permission.INTERNET"/>
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+              <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+              <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
+              <uses-permission android:name="android.permission.WAKE_LOCK"/>
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
               <application
-                  android:allowBackup="true"
-                  android:label="FunkApp"
-                  android:theme="@style/AppTheme">
+                  android:label="FlammoSMP"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
                   <activity android:name=".MainActivity" android:exported="true">
                       <intent-filter>
-                          <action android:name="android.intent.action.MAIN" />
-                          <category android:name="android.intent.category.LAUNCHER" />
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
                       </intent-filter>
                   </activity>
-                  <activity android:name=".SettingsActivity" android:exported="false" android:label="Einstellungen" />
-                  <activity android:name=".CallActivity" android:exported="false" android:label="Anruf" />
+                  <service
+                      android:name=".ProxyService"
+                      android:exported="false"
+                      android:foregroundServiceType="dataSync"/>
               </application>
           </manifest>
           EOF
 
-          cat > app/src/main/res/values/styles.xml <<'EOF'
-          <resources>
-              <style name="AppTheme" parent="Theme.MaterialComponents.DayNight.NoActionBar" />
-          </resources>
+          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@drawable/ic_bg"/>
+              <foreground android:drawable="@drawable/ic_fg"/>
+          </adaptive-icon>
           EOF
 
-          cat > app/src/main/java/com/example/funkapp/ContactStore.kt <<'EOF'
-          package com.example.funkapp
-
-          import android.content.Context
-
-          class ContactStore(context: Context) {
-              private val prefs = context.getSharedPreferences("contacts", Context.MODE_PRIVATE)
-              fun save(number: String, name: String) { prefs.edit().putString(number, name).apply() }
-              fun all(): Map<String, String> = prefs.all.entries.associate { it.key to (it.value as? String ?: "") }
-              fun exists(number: String): Boolean = prefs.contains(number)
-              fun remove(number: String) { prefs.edit().remove(number).apply() }
-          }
+          cat > app/src/main/res/drawable/ic_bg.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp" android:height="108dp"
+              android:viewportWidth="108" android:viewportHeight="108">
+              <path android:fillColor="#7A1F2B" android:pathData="M0,0h108v108h-108z"/>
+          </vector>
           EOF
 
-          # Opt-in Schalter fuer Lautlos-Bypass: gehoert dem Geraetebesitzer.
-          # Niemand sonst kann ihn setzen oder aus der Ferne aktivieren.
-          cat > app/src/main/java/com/example/funkapp/PriorityAlertSettings.kt <<'EOF'
-          package com.example.funkapp
-
-          import android.content.Context
-
-          class PriorityAlertSettings(context: Context) {
-              private val prefs = context.getSharedPreferences("priority_settings", Context.MODE_PRIVATE)
-
-              var enabled: Boolean
-                  get() = prefs.getBoolean("enabled", false)
-                  set(v) = prefs.edit().putBoolean("enabled", v).apply()
-
-              fun enableForMinutes(minutes: Int) {
-                  val now = System.currentTimeMillis()
-                  prefs.edit()
-                      .putBoolean("enabled", true)
-                      .putLong("window_end", now + minutes * 60_000L)
-                      .apply()
-              }
-
-              fun isCurrentlyActive(): Boolean {
-                  if (!enabled) return false
-                  val end = prefs.getLong("window_end", Long.MAX_VALUE)
-                  if (System.currentTimeMillis() > end) { enabled = false; return false }
-                  return true
-              }
-
-              fun disable() { enabled = false }
-          }
+          cat > app/src/main/res/drawable/ic_fg.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp" android:height="108dp"
+              android:viewportWidth="108" android:viewportHeight="108">
+              <path android:fillColor="#8B5A2B" android:pathData="M30,46 L54,58 L54,84 L30,72 Z"/>
+              <path android:fillColor="#6B4423" android:pathData="M54,58 L78,46 L78,72 L54,84 Z"/>
+              <path android:fillColor="#4E9B3A" android:pathData="M30,46 L54,58 L54,65 L30,53 Z"/>
+              <path android:fillColor="#3B7A2C" android:pathData="M54,58 L78,46 L78,53 L54,65 Z"/>
+              <path android:fillColor="#6CC24A" android:pathData="M54,34 L78,46 L54,58 L30,46 Z"/>
+              <path android:fillColor="#FF8A00" android:pathData="M54,12 C60,22 66,27 63,36 C61,42 47,42 45,36 C43,29 50,25 54,12 Z"/>
+              <path android:fillColor="#FFD54A" android:pathData="M54,24 C57,29 59,32 57.5,36 C56,39 52,39 50.5,36 C49.5,32 52,29 54,24 Z"/>
+          </vector>
           EOF
 
-          cat > app/src/main/java/com/example/funkapp/AlertNotifier.kt <<'EOF'
-          package com.example.funkapp
+          cat > app/src/main/java/com/flammosmp/app/ProxyService.kt <<'EOF'
+          package com.flammosmp.app
 
+          import android.app.Notification
           import android.app.NotificationChannel
           import android.app.NotificationManager
-          import android.content.Context
-          import androidx.core.app.NotificationCompat
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.Intent
+          import android.content.pm.ServiceInfo
+          import android.net.wifi.WifiManager
+          import android.os.Build
+          import android.os.IBinder
+          import android.os.PowerManager
+          import android.os.SystemClock
+          import java.net.DatagramPacket
+          import java.net.DatagramSocket
+          import java.net.InetSocketAddress
+          import java.nio.ByteBuffer
+          import java.util.concurrent.ConcurrentHashMap
+          import java.util.concurrent.Executors
 
-          object AlertNotifier {
-              private const val CHANNEL_ID = "funkapp_priority"
+          /**
+           * Meldet per RakNet-Broadcast (UDP 19132) eine LAN-Welt im WLAN an und
+           * leitet alle Pakete der Konsole 1:1 an den Bedrock-Server weiter.
+           * Version/MOTD/Spielerzahl werden direkt vom echten Server uebernommen,
+           * deshalb passt es automatisch zur aktuellen Minecraft-Version.
+           */
+          class ProxyService : Service() {
 
-              fun createChannel(context: Context) {
-                  val m = context.getSystemService(NotificationManager::class.java)
-                  m.createNotificationChannel(
-                      NotificationChannel(CHANNEL_ID, "Durchsagen", NotificationManager.IMPORTANCE_HIGH)
+              companion object {
+                  // >>> HIER Server-Adresse aendern <<<
+                  const val HOST = "flammosmp.net"
+                  const val PORT = 19132
+
+                  val MAGIC = byteArrayOf(0, -1, -1, 0, -2, -2, -2, -2, -3, -3, -3, -3, 0x12, 0x34, 0x56, 0x78)
+
+                  @Volatile var running = false
+                  @Volatile var turbo = false
+                  @Volatile var players = -1
+                  @Volatile var maxPlayers = 50
+                  @Volatile var pingMs = -1L
+                  @Volatile var startTime = 0L
+                  @Volatile var lastConsole = 0L
+                  @Volatile var motd = "FlammoSMP"
+                  @Volatile var error = ""
+                  @Volatile var instance: ProxyService? = null
+
+                  fun buildPing(): ByteArray {
+                      val b = ByteBuffer.allocate(33)
+                      b.put(1.toByte())
+                      b.putLong(System.currentTimeMillis())
+                      b.put(MAGIC)
+                      b.putLong(0x464C414D4D4FL)
+                      return b.array()
+                  }
+
+                  fun exchange(req: ByteArray): Pair<ByteArray, Long>? {
+                      return try {
+                          val s = DatagramSocket()
+                          try {
+                              s.soTimeout = 1500
+                              val addr = InetSocketAddress(HOST, PORT)
+                              if (addr.isUnresolved) return null
+                              val t0 = System.nanoTime()
+                              s.send(DatagramPacket(req, req.size, addr))
+                              val buf = ByteArray(1500)
+                              val r = DatagramPacket(buf, buf.size)
+                              s.receive(r)
+                              Pair(buf.copyOf(r.length), (System.nanoTime() - t0) / 1_000_000)
+                          } finally {
+                              s.close()
+                          }
+                      } catch (e: Exception) {
+                          null
+                      }
+                  }
+
+                  fun parsePong(d: ByteArray) {
+                      if (d.size < 35 || d[0].toInt() != 0x1c) return
+                      val len = ((d[33].toInt() and 0xFF) shl 8) or (d[34].toInt() and 0xFF)
+                      val str = String(d, 35, minOf(len, d.size - 35), Charsets.UTF_8)
+                      val p = str.split(";")
+                      if (p.size > 5) {
+                          motd = p[1]
+                          players = p[4].toIntOrNull() ?: players
+                          maxPlayers = p[5].toIntOrNull() ?: maxPlayers
+                      }
+                  }
+              }
+
+              private var sock: DatagramSocket? = null
+              private val sessions = ConcurrentHashMap<String, DatagramSocket>()
+              private val pool = Executors.newCachedThreadPool()
+              private var mcLock: WifiManager.MulticastLock? = null
+              private var wifiLock: WifiManager.WifiLock? = null
+              private var wake: PowerManager.WakeLock? = null
+              @Volatile private var remote: InetSocketAddress? = null
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  if (intent?.action == "STOP") {
+                      shutdown()
+                      stopSelf()
+                      return START_NOT_STICKY
+                  }
+                  startFg()
+                  if (running) return START_NOT_STICKY
+                  running = true
+                  error = ""
+                  instance = this
+                  players = -1
+                  pingMs = -1
+                  startTime = SystemClock.elapsedRealtime()
+                  lastConsole = 0
+
+                  val wm = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+                  mcLock = wm.createMulticastLock("flammo:mc").apply { setReferenceCounted(false); acquire() }
+                  wake = (getSystemService(POWER_SERVICE) as PowerManager)
+                      .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "flammo:proxy").apply { acquire() }
+                  applyTurbo()
+
+                  pool.execute { loop() }
+                  pool.execute {
+                      try {
+                          while (running) {
+                              exchange(buildPing())?.let { pingMs = it.second; parsePong(it.first) }
+                              Thread.sleep(5000)
+                          }
+                      } catch (e: Exception) { }
+                  }
+                  return START_NOT_STICKY
+              }
+
+              @Suppress("DEPRECATION")
+              fun applyTurbo() {
+                  val wm = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+                  if (turbo) {
+                      if (wifiLock == null) {
+                          val mode = if (Build.VERSION.SDK_INT >= 29) WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                          else WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                          wifiLock = wm.createWifiLock(mode, "flammo:turbo")
+                      }
+                      if (wifiLock?.isHeld == false) wifiLock?.acquire()
+                  } else {
+                      if (wifiLock?.isHeld == true) wifiLock?.release()
+                  }
+              }
+
+              private fun loop() {
+                  try {
+                      val s = DatagramSocket(null)
+                      s.reuseAddress = true
+                      s.broadcast = true
+                      s.bind(InetSocketAddress(PORT))
+                      sock = s
+                      val buf = ByteArray(4096)
+                      while (running) {
+                          val p = DatagramPacket(buf, buf.size)
+                          s.receive(p)
+                          if (p.length == 0) continue
+                          val data = buf.copyOf(p.length)
+                          val from = InetSocketAddress(p.address, p.port)
+                          val id = data[0].toInt() and 0xFF
+                          try {
+                              if (id == 0x01 || id == 0x02) pool.execute { ping(s, data, from) }
+                              else relay(s, data, from)
+                          } catch (e: Exception) { }
+                      }
+                  } catch (e: Exception) {
+                      if (running) error = "Port 19132 belegt oder Netzwerkfehler"
+                  }
+                  running = false
+              }
+
+              private fun ping(s: DatagramSocket, req: ByteArray, to: InetSocketAddress) {
+                  try {
+                      val r = exchange(req) ?: return
+                      pingMs = r.second
+                      parsePong(r.first)
+                      s.send(DatagramPacket(r.first, r.first.size, to))
+                  } catch (e: Exception) { }
+              }
+
+              private fun relay(s: DatagramSocket, data: ByteArray, from: InetSocketAddress) {
+                  lastConsole = SystemClock.elapsedRealtime()
+                  val key = from.toString()
+                  val up = sessions.getOrPut(key) {
+                      val u = DatagramSocket()
+                      u.soTimeout = 60000
+                      pool.execute {
+                          val b = ByteArray(4096)
+                          try {
+                              while (running) {
+                                  val q = DatagramPacket(b, b.size)
+                                  u.receive(q)
+                                  s.send(DatagramPacket(b, q.length, from))
+                              }
+                          } catch (e: Exception) { }
+                          sessions.remove(key)
+                          u.close()
+                      }
+                      u
+                  }
+                  val r = remote ?: InetSocketAddress(HOST, PORT).also { remote = it }
+                  up.send(DatagramPacket(data, data.size, r))
+              }
+
+              private fun startFg() {
+                  val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                  nm.createNotificationChannel(
+                      NotificationChannel("flammo", "FlammoSMP", NotificationManager.IMPORTANCE_LOW)
+                  )
+                  val pi = PendingIntent.getActivity(
+                      this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+                  )
+                  val n = Notification.Builder(this, "flammo")
+                      .setContentTitle("FlammoSMP")
+                      .setContentText("LAN-Welt aktiv - oeffne Minecraft auf der PS5")
+                      .setSmallIcon(android.R.drawable.stat_notify_sync)
+                      .setContentIntent(pi)
+                      .setOngoing(true)
+                      .build()
+                  if (Build.VERSION.SDK_INT >= 29)
+                      startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+                  else startForeground(1, n)
+              }
+
+              private fun shutdown() {
+                  running = false
+                  instance = null
+                  try { sock?.close() } catch (e: Exception) { }
+                  sessions.values.forEach { try { it.close() } catch (e: Exception) { } }
+                  sessions.clear()
+                  if (mcLock?.isHeld == true) mcLock?.release()
+                  if (wifiLock?.isHeld == true) wifiLock?.release()
+                  if (wake?.isHeld == true) wake?.release()
+              }
+
+              override fun onDestroy() {
+                  shutdown()
+                  pool.shutdownNow()
+                  super.onDestroy()
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/flammosmp/app/MainActivity.kt <<'EOF'
+          package com.flammosmp.app
+
+          import android.app.Activity
+          import android.content.Intent
+          import android.graphics.Color
+          import android.graphics.LinearGradient
+          import android.graphics.Shader
+          import android.graphics.Typeface
+          import android.graphics.drawable.GradientDrawable
+          import android.net.ConnectivityManager
+          import android.net.NetworkCapabilities
+          import android.net.wifi.WifiManager
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.Looper
+          import android.os.SystemClock
+          import android.provider.Settings
+          import android.view.Gravity
+          import android.view.View
+          import android.widget.Button
+          import android.widget.ImageView
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.Switch
+          import android.widget.TextView
+          import android.widget.Toast
+
+          class MainActivity : Activity() {
+
+              private val handler = Handler(Looper.getMainLooper())
+              private lateinit var dot: View
+              private lateinit var statusTv: TextView
+              private lateinit var nameTv: TextView
+              private lateinit var motdTv: TextView
+              private lateinit var infoTv: TextView
+              private lateinit var playersTv: TextView
+              private lateinit var pingTv: TextView
+              private lateinit var uptimeTv: TextView
+              private lateinit var connectBtn: Button
+              private lateinit var checkTv: TextView
+              private lateinit var turboSw: Switch
+
+              private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+              private fun col(s: String) = Color.parseColor(s)
+
+              private fun shape(c: String, r: Int, stroke: String? = null) = GradientDrawable().apply {
+                  setColor(col(c)); cornerRadius = dp(r).toFloat()
+                  if (stroke != null) setStroke(dp(1), col(stroke))
+              }
+
+              private fun tv(t: String, sp: Float, c: String = "#FFFFFF", bold: Boolean = false) =
+                  TextView(this).apply {
+                      text = t; textSize = sp; setTextColor(col(c))
+                      if (bold) typeface = Typeface.DEFAULT_BOLD
+                  }
+
+              private fun lp(w: Int = -1, ht: Int = -2, wt: Float = 0f, top: Int = 0, start: Int = 0) =
+                  LinearLayout.LayoutParams(w, ht, wt).apply { topMargin = dp(top); marginStart = dp(start) }
+
+              private fun vbox() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+              private fun hbox() = LinearLayout(this).apply {
+                  orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+              }
+
+              private fun card() = vbox().apply {
+                  setPadding(dp(18), dp(18), dp(18), dp(18))
+                  background = shape("#33FFFFFF", 28, "#44FFFFFF")
+              }
+
+              private fun btn(t: String, bg: String) = Button(this).apply {
+                  text = t; isAllCaps = false; setTextColor(Color.WHITE)
+                  typeface = Typeface.DEFAULT_BOLD; background = shape(bg, 28)
+              }
+
+              private fun stat(label: String, value: TextView, start: Int): LinearLayout =
+                  vbox().apply {
+                      setPadding(dp(14), dp(12), dp(14), dp(12))
+                      background = shape("#22FFFFFF", 18, "#44FFFFFF")
+                      addView(tv(label, 12f, "#BBFFFFFF"))
+                      addView(value)
+                  }.also { it.layoutParams = lp(0, -2, 1f, 0, start) }
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  if (Build.VERSION.SDK_INT >= 33)
+                      requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 1)
+
+                  val root = vbox().apply { setPadding(dp(20), dp(24), dp(20), dp(28)) }
+                  val scroll = ScrollView(this).apply {
+                      background = GradientDrawable(
+                          GradientDrawable.Orientation.TOP_BOTTOM,
+                          intArrayOf(col("#5A3FC0"), col("#1C7C9E"), col("#7B2A6B"))
+                      )
+                      isFillViewport = true
+                      fitsSystemWindows = true
+                      addView(root)
+                  }
+                  setContentView(scroll)
+
+                  val title = tv("FlammoSMP", 36f, bold = true)
+                  title.paint.shader = LinearGradient(
+                      0f, 0f, dp(260).toFloat(), 0f,
+                      intArrayOf(col("#FF9A1F"), col("#E94FA0"), col("#9B5CFF")), null, Shader.TileMode.CLAMP
+                  )
+                  root.addView(title)
+                  root.addView(tv("Dein Server auf der Konsole – ohne Werbung", 14f, "#DDFFFFFF"))
+
+                  // ---- Server-Karte ----
+                  val c1 = card()
+                  root.addView(c1, lp(top = 20))
+
+                  val row = hbox()
+                  val icon = ImageView(this).apply { setImageResource(R.mipmap.ic_launcher) }
+                  row.addView(icon, lp(dp(64), dp(64)))
+                  val info = vbox()
+                  val st = hbox()
+                  dot = View(this)
+                  st.addView(dot, lp(dp(10), dp(10)))
+                  statusTv = tv("GETRENNT", 12f, "#CCFFFFFF", true).apply { letterSpacing = 0.15f }
+                  st.addView(statusTv, lp(start = 8))
+                  info.addView(st)
+                  nameTv = tv("FlammoSMP", 24f, bold = true)
+                  info.addView(nameTv)
+                  row.addView(info, lp(0, -2, 1f, 0, 14))
+                  c1.addView(row)
+
+                  motdTv = tv("", 14f, "#CCFFFFFF")
+                  c1.addView(motdTv, lp(top = 12))
+                  infoTv = tv("", 15f, "#DDFFFFFF")
+                  c1.addView(infoTv, lp(top = 8))
+
+                  playersTv = tv("–/50", 20f, bold = true)
+                  pingTv = tv("– ms", 20f, bold = true)
+                  uptimeTv = tv("00:00:00", 20f, bold = true)
+                  val stats = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                  stats.addView(stat("Spieler", playersTv, 0))
+                  stats.addView(stat("Ping", pingTv, 8))
+                  stats.addView(stat("Laufzeit", uptimeTv, 8))
+                  c1.addView(stats, lp(top = 16))
+
+                  connectBtn = btn("Verbinden", "#55FF5A5A")
+                  c1.addView(connectBtn, lp(top = 16))
+                  connectBtn.setOnClickListener { toggle() }
+
+                  // ---- Optimieren ----
+                  root.addView(tv("OPTIMIEREN", 12f, "#CCFFFFFF", true).apply { letterSpacing = 0.15f }, lp(top = 24))
+                  val c2 = card()
+                  root.addView(c2, lp(top = 8))
+                  c2.addView(tv("⚡ Turbo & Verbindungs-Check", 18f, bold = true))
+                  c2.addView(
+                      tv("Die App kann das Spiel auf der Konsole nicht ändern, aber den Weg zum Server verbessern und dir zeigen, was dich ausbremst.", 14f, "#DDFFFFFF"),
+                      lp(top = 8)
+                  )
+                  val trow = hbox()
+                  trow.addView(tv("Turbo-Modus (niedrige Latenz)", 16f), lp(0, -2, 1f))
+                  turboSw = Switch(this)
+                  trow.addView(turboSw)
+                  c2.addView(trow, lp(top = 14))
+                  turboSw.setOnCheckedChangeListener { _, c ->
+                      ProxyService.turbo = c
+                      ProxyService.instance?.applyTurbo()
+                  }
+                  c2.addView(
+                      tv("Hält das WLAN im Niedriglatenz-Modus, nutzt große Puffer und höchste Priorität. Am besten bei eingeschaltetem Display.", 13f, "#BBFFFFFF"),
+                      lp(top = 6)
+                  )
+                  checkTv = tv("", 14f, "#FFFFFF")
+                  c2.addView(checkTv, lp(top = 10))
+
+                  val brow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                  val checkBtn = btn("Verbindungs-Check", "#55FFFFFF")
+                  val allBtn = btn("Alles optimieren", "#FF2E9BFF")
+                  brow.addView(checkBtn, lp(0, -2, 1f))
+                  brow.addView(allBtn, lp(0, -2, 1f, 0, 10))
+                  c2.addView(brow, lp(top = 14))
+                  checkBtn.setOnClickListener { check() }
+                  allBtn.setOnClickListener { turboSw.isChecked = true; check() }
+
+                  root.addView(
+                      tv("So geht's: 1) Handy und PS5 im selben WLAN. 2) „Verbinden“ tippen. 3) Minecraft auf der PS5 öffnen → Freunde → LAN-Spiele → FlammoSMP.", 13f, "#CCFFFFFF"),
+                      lp(top = 20)
                   )
               }
 
-              // bypassAllowed kommt IMMER vom Empfaenger-Geraet selbst (PriorityAlertSettings),
-              // nie vom Anrufer.
-              fun showIncoming(context: Context, fromName: String) {
-                  val bypassAllowed = PriorityAlertSettings(context).isCurrentlyActive()
-                  val b = NotificationCompat.Builder(context, CHANNEL_ID)
-                      .setSmallIcon(android.R.drawable.ic_dialog_info)
-                      .setContentTitle("Eingehender Anruf: $fromName")
-                      .setPriority(if (bypassAllowed) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
-                  context.getSystemService(NotificationManager::class.java).notify(fromName.hashCode(), b.build())
+              private fun isWifi(): Boolean {
+                  val cm = getSystemService(ConnectivityManager::class.java)
+                  val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+                  return caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
               }
-          }
-          EOF
 
-          cat > app/src/main/res/layout/activity_settings.xml <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-              android:layout_width="match_parent" android:layout_height="match_parent"
-              android:orientation="vertical" android:padding="24dp">
-              <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-                  android:text="Durchsagen bei Lautlos erlauben" android:textSize="18sp" />
-              <Switch android:id="@+id/switchPriority" android:layout_width="wrap_content"
-                  android:layout_height="wrap_content" android:layout_marginTop="12dp" />
-              <Button android:id="@+id/button10min" android:layout_width="wrap_content"
-                  android:layout_height="wrap_content" android:layout_marginTop="24dp"
-                  android:text="Heute einmalig fuer 10 Minuten freischalten" />
-              <TextView android:id="@+id/statusText" android:layout_width="wrap_content"
-                  android:layout_height="wrap_content" android:layout_marginTop="24dp" />
-          </LinearLayout>
-          EOF
-
-          cat > app/src/main/java/com/example/funkapp/SettingsActivity.kt <<'EOF'
-          package com.example.funkapp
-
-          import android.os.Bundle
-          import android.widget.Button
-          import android.widget.Switch
-          import android.widget.TextView
-          import androidx.appcompat.app.AppCompatActivity
-
-          class SettingsActivity : AppCompatActivity() {
-              override fun onCreate(savedInstanceState: Bundle?) {
-                  super.onCreate(savedInstanceState)
-                  setContentView(R.layout.activity_settings)
-                  val settings = PriorityAlertSettings(this)
-                  val sw = findViewById<Switch>(R.id.switchPriority)
-                  val btn = findViewById<Button>(R.id.button10min)
-                  val status = findViewById<TextView>(R.id.statusText)
-
-                  fun refresh() {
-                      status.text = if (settings.isCurrentlyActive()) "Aktiv" else "Inaktiv"
-                      sw.isChecked = settings.enabled
+              private fun toggle() {
+                  if (ProxyService.running) {
+                      startService(Intent(this, ProxyService::class.java).setAction("STOP"))
+                      ProxyService.running = false
+                  } else {
+                      if (!isWifi()) {
+                          Toast.makeText(this, "Bitte zuerst mit dem WLAN verbinden", Toast.LENGTH_LONG).show()
+                          startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
+                          return
+                      }
+                      startForegroundService(Intent(this, ProxyService::class.java))
+                      ProxyService.running = true
+                      ProxyService.startTime = SystemClock.elapsedRealtime()
                   }
-                  sw.setOnCheckedChangeListener { _, checked -> if (checked) settings.enabled = true else settings.disable(); refresh() }
-                  btn.setOnClickListener { settings.enableForMinutes(10); refresh() }
                   refresh()
               }
-          }
-          EOF
 
-          cat > app/src/main/res/layout/activity_main.xml <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-              android:layout_width="match_parent" android:layout_height="match_parent"
-              android:orientation="vertical" android:padding="24dp">
-              <EditText android:id="@+id/numberInput" android:layout_width="match_parent"
-                  android:layout_height="wrap_content" android:hint="Nummer" android:inputType="number" />
-              <EditText android:id="@+id/nameInput" android:layout_width="match_parent"
-                  android:layout_height="wrap_content" android:hint="Name (optional)" android:layout_marginTop="8dp" />
-              <Button android:id="@+id/saveButton" android:layout_width="wrap_content"
-                  android:layout_height="wrap_content" android:text="Speichern" android:layout_marginTop="12dp" />
-              <Button android:id="@+id/callButton" android:layout_width="wrap_content"
-                  android:layout_height="wrap_content" android:text="Anrufen" android:layout_marginTop="8dp" />
-              <Button android:id="@+id/settingsButton" android:layout_width="wrap_content"
-                  android:layout_height="wrap_content" android:text="Einstellungen" android:layout_marginTop="8dp" />
-              <TextView android:id="@+id/resultText" android:layout_width="wrap_content"
-                  android:layout_height="wrap_content" android:layout_marginTop="16dp" />
-          </LinearLayout>
-          EOF
-
-          cat > app/src/main/java/com/example/funkapp/MainActivity.kt <<'EOF'
-          package com.example.funkapp
-
-          import android.content.Intent
-          import android.os.Bundle
-          import android.widget.Button
-          import android.widget.EditText
-          import android.widget.TextView
-          import android.widget.Toast
-          import androidx.appcompat.app.AppCompatActivity
-
-          class MainActivity : AppCompatActivity() {
-              override fun onCreate(savedInstanceState: Bundle?) {
-                  super.onCreate(savedInstanceState)
-                  setContentView(R.layout.activity_main)
-                  AlertNotifier.createChannel(this)
-                  val store = ContactStore(this)
-                  val numberInput = findViewById<EditText>(R.id.numberInput)
-                  val nameInput = findViewById<EditText>(R.id.nameInput)
-                  val resultText = findViewById<TextView>(R.id.resultText)
-
-                  findViewById<Button>(R.id.saveButton).setOnClickListener {
-                      val number = numberInput.text.toString().trim()
-                      if (number.isEmpty()) { Toast.makeText(this, "Nummer eingeben", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
-                      store.save(number, nameInput.text.toString().trim().ifEmpty { number })
-                      resultText.text = "Gespeichert: $number"
-                  }
-
-                  findViewById<Button>(R.id.callButton).setOnClickListener {
-                      val number = numberInput.text.toString().trim()
-                      if (!store.exists(number)) { resultText.text = "Nummer nicht gespeichert."; return@setOnClickListener }
-                      val name = store.all()[number] ?: number
-                      val i = Intent(this, CallActivity::class.java)
-                      i.putExtra("peerName", name)
-                      i.putExtra("peerNumber", number)
-                      startActivity(i)
-                  }
-
-                  findViewById<Button>(R.id.settingsButton).setOnClickListener {
-                      startActivity(Intent(this, SettingsActivity::class.java))
-                  }
-              }
-          }
-          EOF
-
-          # Anruf-Bildschirm: WebRTC-Audio-Geruest + Opt-in-Pruefung.
-          # Nur die Client-Seite. Fuer eine echte Verbindung zwischen zwei
-          # Geraeten braucht es zusaetzlich einen Signaling-Server (WebSocket),
-          # ueber den beide Seiten ihre Verbindungsdaten austauschen - den
-          # musst du selbst betreiben und unten eintragen. Ohne ihn kompiliert
-          # die App, baut aber keine echte Verbindung auf.
-          cat > app/src/main/java/com/example/funkapp/CallActivity.kt <<'EOF'
-          package com.example.funkapp
-
-          import android.Manifest
-          import android.content.pm.PackageManager
-          import android.os.Bundle
-          import android.widget.TextView
-          import androidx.activity.result.contract.ActivityResultContracts
-          import androidx.appcompat.app.AppCompatActivity
-          import androidx.core.content.ContextCompat
-
-          private const val SIGNALING_URL = "wss://DEIN-EIGENER-SIGNALING-SERVER"
-
-          class CallActivity : AppCompatActivity() {
-
-              private val micPermission = registerForActivityResult(
-                  ActivityResultContracts.RequestPermission()
-              ) { granted -> if (granted) startCall() else finish() }
-
-              override fun onCreate(savedInstanceState: Bundle?) {
-                  super.onCreate(savedInstanceState)
-                  val status = TextView(this)
-                  setContentView(status)
-
-                  val peerName = intent.getStringExtra("peerName") ?: "?"
-                  val peerNumber = intent.getStringExtra("peerNumber") ?: ""
-
-                  // Ob diese Benachrichtigung den Lautlos-Modus durchbricht,
-                  // entscheidet AUSSCHLIESSLICH die Opt-in-Einstellung auf dem
-                  // Empfaenger-Geraet (SettingsActivity), niemals diese Activity.
-                  AlertNotifier.showIncoming(this, peerName)
-                  status.text = "Verbinde mit $peerName ($peerNumber) ueber $SIGNALING_URL ..."
-
-                  if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-                      == PackageManager.PERMISSION_GRANTED
-                  ) {
-                      startCall()
-                  } else {
-                      micPermission.launch(Manifest.permission.RECORD_AUDIO)
-                  }
+              private fun check() {
+                  checkTv.text = "Prüfe Verbindung …"
+                  Thread {
+                      val r = ProxyService.exchange(ProxyService.buildPing())
+                      val wm = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+                      @Suppress("DEPRECATION") val wi = wm.connectionInfo
+                      val sb = StringBuilder()
+                      if (r == null) sb.append("Server nicht erreichbar.")
+                      else {
+                          sb.append("Server erreichbar · ${r.second} ms")
+                          if (r.second > 80) sb.append(" (hoch – näher an den Router, 5-GHz-WLAN nutzen)")
+                      }
+                      sb.append("\nWLAN: ${wi.rssi} dBm · ${wi.linkSpeed} Mbit/s")
+                      runOnUiThread { checkTv.text = sb.toString() }
+                  }.start()
               }
 
-              private fun startCall() {
-                  // Hier wuerde die WebRTC-PeerConnection aufgebaut: Angebot/Antwort
-                  // (SDP) und ICE-Kandidaten ueber SIGNALING_URL austauschen, danach
-                  // lokalen Audio-Track hinzufuegen. Dieser Teil setzt einen
-                  // laufenden Signaling-Server voraus und steht deshalb nur als
-                  // Geruest hier - die stream-webrtc-android Bibliothek ist bereits
-                  // eingebunden (siehe app/build.gradle.kts).
+              private fun refresh() {
+                  val on = ProxyService.running
+                  dot.background = GradientDrawable().apply {
+                      shape = GradientDrawable.OVAL
+                      setColor(col(if (on) "#3DDC97" else "#9E9E9E"))
+                  }
+                  statusTv.text = if (on) "VERBUNDEN" else "GETRENNT"
+                  motdTv.text = "🔥 " + ProxyService.motd + " | " + ProxyService.HOST
+                  val now = SystemClock.elapsedRealtime()
+                  infoTv.text = when {
+                      ProxyService.error.isNotEmpty() -> ProxyService.error
+                      !on -> "Nicht aktiv – tippe auf „Verbinden“"
+                      ProxyService.lastConsole > 0 && now - ProxyService.lastConsole < 30000 -> "Konsole verbunden – viel Spaß!"
+                      else -> "Wartet auf die Konsole · PlayStation: Freunde → LAN-Spiele"
+                  }
+                  val up = if (on) (now - ProxyService.startTime) / 1000 else 0
+                  uptimeTv.text = String.format("%02d:%02d:%02d", up / 3600, up % 3600 / 60, up % 60)
+                  playersTv.text = if (on && ProxyService.players >= 0) "${ProxyService.players}/${ProxyService.maxPlayers}" else "–/${ProxyService.maxPlayers}"
+                  pingTv.text = if (on && ProxyService.pingMs >= 0) "${ProxyService.pingMs} ms" else "– ms"
+                  connectBtn.text = if (on) "Trennen" else "Verbinden"
               }
+
+              private val tick = object : Runnable {
+                  override fun run() { refresh(); handler.postDelayed(this, 1000) }
+              }
+
+              override fun onResume() { super.onResume(); turboSw.isChecked = ProxyService.turbo; handler.post(tick) }
+              override fun onPause() { super.onPause(); handler.removeCallbacks(tick) }
           }
           EOF
-
-          echo "Projekt erzeugt:"
-          find app -type f | sort
 
       - name: APK bauen
-        run: gradle assembleDebug --no-daemon --stacktrace
+        run: gradle assembleDebug --no-daemon
 
       - name: APK hochladen
         uses: actions/upload-artifact@v4
         with:
-          name: FunkApp-APK
+          name: FlammoSMP-APK
           path: app/build/outputs/apk/debug/app-debug.apk
