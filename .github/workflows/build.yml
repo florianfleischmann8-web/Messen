@@ -83,6 +83,8 @@ jobs:
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+              <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation"/>
+              <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK"/>
               <application
                   android:label="FlammoSMP"
                   android:icon="@mipmap/ic_launcher"
@@ -468,8 +470,8 @@ jobs:
 
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
-                  if (Build.VERSION.SDK_INT >= 33)
-                      requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 1)
+                  val need = needed()
+                  if (need.isNotEmpty()) requestPermissions(need, 1)
 
                   val root = vbox().apply { setPadding(dp(20), dp(24), dp(20), dp(28)) }
                   val scroll = ScrollView(this).apply {
@@ -574,21 +576,36 @@ jobs:
                   return caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
               }
 
+              // Berechtigungen: "Geräte in der Nähe" / lokales Netzwerk + Benachrichtigungen
+              private fun needed(): Array<String> {
+                  val list = ArrayList<String>()
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      list.add("android.permission.POST_NOTIFICATIONS")
+                      list.add("android.permission.NEARBY_WIFI_DEVICES")
+                  }
+                  if (Build.VERSION.SDK_INT >= 36) list.add("android.permission.ACCESS_LOCAL_NETWORK")
+                  return list.filter { checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED }
+                      .toTypedArray()
+              }
+
               private fun toggle() {
                   if (ProxyService.running) {
                       startService(Intent(this, ProxyService::class.java).setAction("STOP"))
-                      ProxyService.running = false
                   } else {
+                      val need = needed().filter { it != "android.permission.POST_NOTIFICATIONS" }
+                      if (need.isNotEmpty()) {
+                          Toast.makeText(this, "Bitte „Geräte in der Nähe“ / lokales Netzwerk erlauben", Toast.LENGTH_LONG).show()
+                          requestPermissions(needed(), 1)
+                          return
+                      }
                       if (!isWifi()) {
                           Toast.makeText(this, "Bitte zuerst mit dem WLAN verbinden", Toast.LENGTH_LONG).show()
                           startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
                           return
                       }
                       startForegroundService(Intent(this, ProxyService::class.java))
-                      ProxyService.running = true
-                      ProxyService.startTime = SystemClock.elapsedRealtime()
                   }
-                  refresh()
+                  handler.postDelayed({ refresh() }, 300)
               }
 
               private fun check() {
